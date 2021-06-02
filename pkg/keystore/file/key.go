@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io"
 
 	"github.com/ethersphere/bee/pkg/crypto"
@@ -98,6 +99,7 @@ func encryptData(data, password []byte) (*keyCripto, error) {
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
 		return nil, fmt.Errorf("read random data: %w", err)
 	}
+
 	derivedKey, err := scrypt.Key(password, salt, scryptN, scryptR, scryptP, scryptDKLen)
 	if err != nil {
 		return nil, err
@@ -151,7 +153,10 @@ func decryptData(v keyCripto, password string) ([]byte, error) {
 	}
 	calculatedMAC := sha3.Sum256(append(derivedKey[16:32], cipherText...))
 	if !bytes.Equal(calculatedMAC[:], mac) {
-		return nil, keystore.ErrInvalidPassword
+		calculatedMAC2 := Keccak256(append(derivedKey[16:32], cipherText...))
+		if !bytes.Equal(calculatedMAC2[:], mac) {
+			return nil, keystore.ErrInvalidPassword
+		}
 	}
 
 	iv, err := hex.DecodeString(v.CipherParams.IV)
@@ -192,4 +197,29 @@ func getKDFKey(v keyCripto, password []byte) ([]byte, error) {
 		v.KDFParams.P,
 		v.KDFParams.DKLen,
 	)
+}
+
+// KeccakState wraps sha3.state. In addition to the usual hash methods, it also supports
+// Read to get a variable amount of data from the hash state. Read is faster than Sum
+// because it doesn't copy the internal state, but also modifies the internal state.
+type KeccakState interface {
+	hash.Hash
+	Read([]byte) (int, error)
+}
+
+// NewKeccakState creates a new KeccakState
+func NewKeccakState() KeccakState {
+	return sha3.NewLegacyKeccak256().(KeccakState)
+}
+
+// Keccak256 calculates and returns the Keccak256 hash of the input data.
+func Keccak256(data ...[]byte) []byte {
+	b := make([]byte, 32)
+	d := NewKeccakState()
+	for _, b := range data {
+		d.Write(b)
+	}
+	// nolint
+	d.Read(b)
+	return b
 }
